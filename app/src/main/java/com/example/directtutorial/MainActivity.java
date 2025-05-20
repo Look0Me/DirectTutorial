@@ -15,6 +15,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
@@ -35,6 +36,9 @@ import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.lifecycle.ViewModelProvider;
+import androidx.lifecycle.ViewModelStoreOwner;
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -50,33 +54,35 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
 
-    TextView connectionStatus, messageTextView;
+    TextView connectionStatus, messageTextView;//Элементы интерфейса
     Button discoverButton;
     ListView listView;
     EditText typeMsg;
     ImageButton sendButton;
 
-    WifiP2pManager manager;
+    WifiP2pManager manager;//Менеджер для работы с P2P
     WifiP2pManager.Channel channel;
 
-    BroadcastReceiver receiver;
+    BroadcastReceiver receiver;//Бродкаст ресивер
     IntentFilter intentFilter;
 
-    List<WifiP2pDevice> peers =new ArrayList<WifiP2pDevice>();
+    List<WifiP2pDevice> peers =new ArrayList<WifiP2pDevice>();//Массив доступных устройств
     String[] deviceNameArray;
     WifiP2pDevice[] deviceArray;
 
-    Socket socket;
+    Socket socket;//Сокет для соединения
 
-    ServerClass serverClass;
+    ServerClass serverClass;//Сервер и клиент класс
     ClientClass clientClass;
+
+    private ChatViewModel chatViewModel;
 
     boolean isHost;
 
 
-    private ActivityResultLauncher<Intent> wifiSettingsLauncher;
-    private ActivityResultLauncher<String> requestLocationPermissionLauncher;
-    private ActivityResultLauncher<String[]> requestNearbyPermissionLauncher;
+    private ActivityResultLauncher<Intent> wifiSettingsLauncher;//Открытие настроек вайфай
+    private ActivityResultLauncher<String> requestLocationPermissionLauncher;//Открытие настроек местоположения
+    private ActivityResultLauncher<String[]> requestNearbyPermissionLauncher;//Открытие настроек устройств поблизости
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -89,13 +95,13 @@ public class MainActivity extends AppCompatActivity {
             return insets;
         });
 
-        wifiSettingsLauncher = registerForActivityResult(
+        wifiSettingsLauncher = registerForActivityResult(               //Регистрация лаунчера для настроек Wi-Fi
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> handleWifiSettingsResult()
         );
 
-        // Регистрация лаунчера для запроса разрешения местоположения
-        requestLocationPermissionLauncher = registerForActivityResult(
+
+        requestLocationPermissionLauncher = registerForActivityResult( // Регистрация лаунчера для запроса разрешения местоположения
                 new ActivityResultContracts.RequestPermission(),
                 isGranted -> {
                     if (isGranted) {
@@ -106,8 +112,8 @@ public class MainActivity extends AppCompatActivity {
                 }
         );
 
-        // Регистрация лаунчера для запроса разрешений
-        requestNearbyPermissionLauncher = registerForActivityResult(
+
+        requestNearbyPermissionLauncher = registerForActivityResult(    // Регистрация лаунчера для запроса разрешений
                 new ActivityResultContracts.RequestMultiplePermissions(),
                 result -> {
                     if (result.containsValue(false)) {
@@ -123,11 +129,11 @@ public class MainActivity extends AppCompatActivity {
         // Проверка всех необходимых разрешений
         checkPermissions();
 
-        initialWork();
-        exqListener();
+        initialWork();//Инициализация объектов интерфейса
+        exqListener();//Установка листенеров
     }
 
-    @Override
+    @Override                       //Перекрытие соединения при уничтожении приложения
     protected void onDestroy() {
         super.onDestroy();
         if (manager != null && channel != null) {
@@ -160,8 +166,15 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    ///////////////////////////////////////////////////////////////////////////////////
+    ///////////////////ПРОВЕРКА РАЗРЕШЕНИЙ///////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////
 
-    private void checkPermissions() {
+    private void handleWifiSettingsResult() {
+        Toast.makeText(MainActivity.this, "Настройки Wi-Fi завершены!", Toast.LENGTH_SHORT).show();
+    }
+
+    private void checkPermissions() {   //Проверка разрешений
         // Проверяем разрешение на местоположение
         checkLocationPermission();
 
@@ -169,7 +182,7 @@ public class MainActivity extends AppCompatActivity {
         checkNearbyDevicesPermissions();
     }
 
-    private void checkNearbyDevicesPermissions() {
+    private void checkNearbyDevicesPermissions() {     //Проверка разрешения устройств поблизости
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // Android 13+
             boolean nearbyPermissionGranted = ContextCompat.checkSelfPermission(
                     this, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED;
@@ -206,7 +219,18 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void showNearbyPermissionRationale() {
+    private void checkLocationPermission() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED) {
+            onLocationPermissionGranted();
+        } else if (shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            showLocationPermissionRationale();
+        } else {
+            requestLocationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION);
+        }
+    }
+
+    private void showNearbyPermissionRationale() {      //Показ диалогового окна для устройств поблизости
         new AlertDialog.Builder(this)
                 .setTitle("Доступ к устройствам поблизости")
                 .setMessage("Это приложение требует доступ к устройствам поблизости для их обнаружения.")
@@ -226,6 +250,19 @@ public class MainActivity extends AppCompatActivity {
                 .show();
     }
 
+    private void showLocationPermissionRationale() {
+        new AlertDialog.Builder(this)
+                .setTitle("Доступ к местоположению")
+                .setMessage("Это приложение требует доступ к вашему местоположению для корректной работы.")
+                .setPositiveButton("Разрешить", (dialog, which) -> {
+                    requestLocationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION);
+                })
+                .setNegativeButton("Отмена", (dialog, which) -> onLocationPermissionDenied())
+                .show();
+    }
+
+
+    //Тосты для отображения результатов
     private void onNearbyDevicesPermissionGranted() {
         Toast.makeText(MainActivity.this, "Доступ к устройствам поблизости предоставлен!", Toast.LENGTH_SHORT).show();
     }
@@ -242,32 +279,25 @@ public class MainActivity extends AppCompatActivity {
         Toast.makeText(MainActivity.this, "Доступ к местоположению предоставлен!", Toast.LENGTH_SHORT).show();
     }
 
-    private void checkLocationPermission() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED) {
-            onLocationPermissionGranted();
-        } else if (shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)) {
-            showLocationPermissionRationale();
+    private boolean hasAllPermissions() {           //Есть все разрешения
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED;
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+                    ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
         } else {
-            requestLocationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION);
+            return true;
         }
     }
 
-    private void showLocationPermissionRationale() {
-        new AlertDialog.Builder(this)
-                .setTitle("Доступ к местоположению")
-                .setMessage("Это приложение требует доступ к вашему местоположению для корректной работы.")
-                .setPositiveButton("Разрешить", (dialog, which) -> {
-                    requestLocationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION);
-                })
-                .setNegativeButton("Отмена", (dialog, which) -> onLocationPermissionDenied())
-                .show();
-    }
+    ///////////////////////////////////////////////////////////////////////////////////
+    ///////////////////УСТАНОВКА ЛИСТЕНЕРОВ///////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////
 
     @SuppressLint("MissingPermission")
-    private void exqListener() {
+    private void exqListener() {        //Установка листнеров
 
-        discoverButton.setOnClickListener(view -> {
+        discoverButton.setOnClickListener(view -> {   //Кнопка обнаружения
             if (hasAllPermissions()) {
                 manager.discoverPeers(channel, new WifiP2pManager.ActionListener() {
                     @Override
@@ -285,15 +315,15 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+        listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {  //Установка листенера для выбора устройства
             @Override
             public void onItemClick(AdapterView<?> adapterView, View view, int i, long l) {
-                final WifiP2pDevice device = deviceArray[i];
+                final WifiP2pDevice device = deviceArray[i];    //Выбранное устройство
                 WifiP2pConfig config = new WifiP2pConfig();
                 config.deviceAddress=device.deviceAddress;
 
 
-                manager.connect(channel, config, new WifiP2pManager.ActionListener() {
+                manager.connect(channel, config, new WifiP2pManager.ActionListener() {  //Подключение к выбранному устройству
                     @Override
                     public void onSuccess() {
                         connectionStatus.setText("Connected: " + device.deviceAddress);
@@ -308,7 +338,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        sendButton.setOnClickListener(new View.OnClickListener() {
+        sendButton.setOnClickListener(new View.OnClickListener() {  //Отправка сообщения
             @Override
             public void onClick(View view) {
                 ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -328,27 +358,10 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private boolean hasAllPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            return ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED;
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            return ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-                    ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
-        } else {
-            return true;
-        }
-    }
 
-    private void openWifiSettings() {
-        Intent intent = new Intent(android.provider.Settings.ACTION_WIFI_SETTINGS);
-        wifiSettingsLauncher.launch(intent);
-    }
-
-    private void handleWifiSettingsResult() {
-        Toast.makeText(MainActivity.this, "Настройки Wi-Fi завершены!", Toast.LENGTH_SHORT).show();
-    }
-
-
+    ///////////////////////////////////////////////////////////////////////////////////
+    ///////////////////ИНИЦИАЛИЗАЦИЯ ОБЪЕКТОВ///////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////
 
     private void initialWork() {
         connectionStatus=findViewById(R.id.connectionStatus);
@@ -359,7 +372,8 @@ public class MainActivity extends AppCompatActivity {
         typeMsg=findViewById(R.id.editTextTypeMsg);
         sendButton=findViewById(R.id.sendButton);
 
-        manager = (WifiP2pManager) getSystemService(Context.WIFI_P2P_SERVICE);
+        ///////////////////////////////////////////////////////////////////////////////////////////////////////
+        manager = (WifiP2pManager) getSystemService(Context.WIFI_P2P_SERVICE);      //Настройка вайфай директа
         channel =  manager.initialize(this,getMainLooper(),null);
         receiver = new WiFiDirectBroadcastReceiver(manager,channel,this);
 
@@ -367,8 +381,15 @@ public class MainActivity extends AppCompatActivity {
         intentFilter.addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION);
         intentFilter.addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION);
         intentFilter.addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION);
+
+
+
+//
     }
 
+    ///////////////////////////////////////////////////////////////////////////////////
+    ///////////////////ОБНОВЛЕНИЕ СПИСКА УСТРОЙСТВ///////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////
 
     WifiP2pManager.PeerListListener peerListListener = new WifiP2pManager.PeerListListener() {
         @Override
@@ -405,6 +426,10 @@ public class MainActivity extends AppCompatActivity {
     };
 
 
+    ///////////////////////////////////////////////////////////////////////////////////
+    ///////////////////ОБНОВЛЕНИЕ СОСТОЯНИЯ ПОДКЛЮЧЕНИЯ////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////
+
     WifiP2pManager.ConnectionInfoListener connectionInfoListener = new WifiP2pManager.ConnectionInfoListener() {
         @Override
         public void onConnectionInfoAvailable(WifiP2pInfo wifiP2pInfo) {
@@ -422,6 +447,42 @@ public class MainActivity extends AppCompatActivity {
                 clientClass = new ClientClass(groupOwnerAddress);
                 clientClass.start();
             }
+
+            // Переход к экрану чата после успешного соединения
+//            if (wifiP2pInfo.groupFormed) {
+//                Intent intent = new Intent(MainActivity.this, ChatActivity.class);
+//                intent.putExtra("isHost", isHost); // Передаем статус устройства
+//                startActivity(intent);
+//            }
+        }
+    };
+
+
+
+    private BroadcastReceiver messageReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+
+            Log.d("MainActivity", "Получено сообщение через Broadcast");
+            if (intent.getAction().equals("SEND_MESSAGE")) {
+                String message = intent.getStringExtra("smessage");
+                Log.d("MainActivity", "Сообщение: " + message);
+            }
+
+            if (intent.getAction().equals("SEND_MESSAGE")) {
+                String message = intent.getStringExtra("smessage");
+                if (message != null && !message.isEmpty()) {
+                    // Отправляем сообщение другому устройству
+                    ExecutorService executor = Executors.newSingleThreadExecutor();
+                    executor.execute(() -> {
+                        if (isHost && serverClass != null) {
+                            serverClass.write(message.getBytes());
+                        } else if (!isHost && clientClass != null) {
+                            clientClass.write(message.getBytes());
+                        }
+                    });
+                }
+            }
         }
     };
 
@@ -429,12 +490,19 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         registerReceiver(receiver,intentFilter);
+        Log.d("MainActivity", "onResume() - активность снова на экране");
+
+        LocalBroadcastManager.getInstance(this).registerReceiver(messageReceiver,
+                new IntentFilter("SEND_MESSAGE"));
+
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        Log.d("MainActivity", "onPause() - активность свернута");
         unregisterReceiver(receiver);
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(messageReceiver);
     }
 
     public class ServerClass extends Thread{
@@ -446,7 +514,9 @@ public class MainActivity extends AppCompatActivity {
         {
             try {
                 outputStream.write(bytes);
+                Log.d("WiFiDirect", "Сообщение отправлено другому устройству: " + new String(bytes));
             } catch (IOException e) {
+                Log.e("WiFiDirect", "Ошибка отправки сообщения", e);
                 throw new RuntimeException(e);
             }
         }
@@ -469,36 +539,25 @@ public class MainActivity extends AppCompatActivity {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    byte[] buffer = new byte[1024]; // Буфер для входящих данных
+                    byte[] buffer = new byte[1024];
                     int bytes;
 
-                    while (socket != null) {
-                        try {
-                            // Чтение данных из входящего потока
+                    try {
+                        inputStream = socket.getInputStream();
+                        outputStream = socket.getOutputStream();
+
+                        while (socket != null) {
                             bytes = inputStream.read(buffer);
                             if (bytes > 0) {
-                                int finalBytes = bytes; // Количество считанных байт
-                                handler.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        // Преобразование данных в строку
-                                        buffer[finalBytes] = 10;
-                                        String tempMSG = new String(buffer, 0, finalBytes+1);
-//                                        String look = messageTextView.getText();
-                                        if (messageTextView.getText().toString().equals("ReceivedMessage"))
-                                        {
-                                            messageTextView.setText(tempMSG); // Отображение сообщения
-                                        }
-                                        else {
-                                            messageTextView.append(tempMSG); // Отображение сообщения
-                                        }
-                                        Toast.makeText(MainActivity.this, tempMSG, Toast.LENGTH_SHORT).show();
-                                    }
-                                });
+                                String receivedMessage = new String(buffer, 0, bytes);
+                                Log.d("MainActivity", "Получено сообщение от другого устройства: " + receivedMessage);
+
+                                // Передаём сообщение в ViewModel, чтобы оно отобразилось в ChatActivity
+                                chatViewModel.setReceivedMessage(receivedMessage);
                             }
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
                         }
+                    } catch (IOException e) {
+                        e.printStackTrace();
                     }
                 }
             });
@@ -521,7 +580,9 @@ public class MainActivity extends AppCompatActivity {
         {
             try {
                 outputStream.write(bytes);
+                Log.d("WiFiDirect", "Сообщение отправлено другому устройству: " + new String(bytes));
             } catch (IOException e) {
+                Log.e("WiFiDirect", "Ошибка отправки сообщения", e);
                 throw new RuntimeException(e);
             }
         }
@@ -542,36 +603,25 @@ public class MainActivity extends AppCompatActivity {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    byte[] buffer = new byte[1024]; // Буфер для входящих данных
+                    byte[] buffer = new byte[1024];
                     int bytes;
 
-                    while (socket != null) {
-                        try {
-                            // Чтение данных из входящего потока
+                    try {
+                        inputStream = socket.getInputStream();
+                        outputStream = socket.getOutputStream();
+
+                        while (socket != null) {
                             bytes = inputStream.read(buffer);
                             if (bytes > 0) {
-                                int finalBytes = bytes; // Количество считанных байт
-                                handler.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        // Преобразование данных в строку
-                                        buffer[finalBytes] = 10;
-                                        String tempMSG = new String(buffer, 0, finalBytes+1);
-//                                        String look = messageTextView.getText();
-                                        if (messageTextView.getText().toString().equals("ReceivedMessage"))
-                                        {
-                                            messageTextView.setText(tempMSG); // Отображение сообщения
-                                        }
-                                        else {
-                                            messageTextView.append(tempMSG); // Отображение сообщения
-                                        }
-                                        Toast.makeText(MainActivity.this, tempMSG, Toast.LENGTH_SHORT).show();
-                                    }
-                                });
+                                String receivedMessage = new String(buffer, 0, bytes);
+                                Log.d("MainActivity", "Получено сообщение от другого устройства: " + receivedMessage);
+
+                                // Передаём сообщение в ViewModel, чтобы оно отобразилось в ChatActivity
+                                chatViewModel.setReceivedMessage(receivedMessage);
                             }
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
                         }
+                    } catch (IOException e) {
+                        e.printStackTrace();
                     }
                 }
             });
